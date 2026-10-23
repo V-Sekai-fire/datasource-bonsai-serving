@@ -160,6 +160,19 @@ defmodule BonsaiServingTest do
       assert BonsaiServing.Latency.parse_dones([started, @short_line]) |> length() == 1
     end
 
+    # A request that never queued has no queue field, and this is the common case for a lone caller.
+    # A parser that requires it drops every such run.
+    test "a line without a queue field parses" do
+      line =
+        "2026-10-23 05:25:52.008  INFO  req#1 done | openai-chat | stop token | prompt 18 | output 4 | cache 0 (0.0%) | TTFT 1.1s | total 1.2s | prefill 16.2 tok/s | decode 62.6 tok/s | dflash2 accepted 0/15 (0.0%)"
+
+      assert {:ok, r} = BonsaiServing.Latency.parse_done(line)
+      assert r.queue_ms == 0.0
+      assert r.ttft_ms == 1100.0
+      assert r.decode_tps == 62.6
+      assert r.spec_accepted == 0 and r.spec_drafted == 15
+    end
+
     # A request with no speculative decoding has no dflash2 field at all; the group comes back as
     # an empty string and must read as zero, not crash the parse.
     test "a line without a speculative section parses with zeros" do
@@ -170,6 +183,23 @@ defmodule BonsaiServingTest do
       assert r.spec_accepted == 0 and r.spec_drafted == 0 and r.spec_pct == 0.0
       assert r.prefill_tps == 2000.0
       assert r.finish == "length"
+    end
+
+    test "spread reports min, median, max and the spread as a percentage of the median" do
+      rows = [req(100.0, 100.0, 0.0), req(200.0, 110.0, 0.0), req(300.0, 120.0, 0.0)]
+      s = BonsaiServing.Latency.spread(rows, :ttft_ms)
+      assert s.n == 3
+      assert s.min == 100.0 and s.median == 200.0 and s.max == 300.0
+
+      # An even count takes the mean of the two middles.
+      four = [req(100.0, 1.0, 0.0), req(200.0, 1.0, 0.0), req(300.0, 1.0, 0.0), req(400.0, 1.0, 0.0)]
+      assert BonsaiServing.Latency.spread(four, :ttft_ms).median == 250.0
+
+      lines = BonsaiServing.Latency.spread_table(rows)
+      assert Enum.at(lines, 0) =~ "metric"
+      # Row 1 is the separator, row 2 the first metric.
+      assert Enum.at(lines, 2) =~ "TTFT"
+      assert Enum.at(lines, 2) =~ "100%"
     end
 
     test "a prompt of N words is long enough to prefill" do
@@ -226,10 +256,20 @@ defmodule BonsaiServingTest do
         args = transform.(base)
         # The arm passes the artifact to the binary itself, so a variant must not add one.
         refute Config.models() in args, "#{name} added the artifact"
-        assert Enum.count(args, &(&1 == "--devices")) == 1, "#{name} duplicated --devices"
-        assert Enum.count(args, &(&1 == "--kv-dtype")) == 1, "#{name} duplicated --kv-dtype"
-        assert Enum.count(args, &(&1 == "--draft-tokens")) == 1, "#{name} duplicated --draft-tokens"
+        # At most once: a variant may drop a flag (no_spec drops two), but never repeat one.
+        for flag <- ["--devices", "--kv-dtype", "--draft-tokens", "--spec", "--max-context"] do
+          assert Enum.count(args, &(&1 == flag)) <= 1, "#{name} repeated #{flag}"
+        end
+
+        assert Enum.count(args, &(&1 == "--devices")) == 1, "#{name} dropped --devices"
       end
+    end
+
+    test "remove_spec leaves no speculative flags behind" do
+      args = Sweep.remove_spec(Config.unit_args())
+      refute "--spec" in args
+      refute "--draft-tokens" in args
+      assert "--devices" in args
     end
 
     test "the summary reports the cold and warm rows and a failed variant" do

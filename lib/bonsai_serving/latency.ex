@@ -17,7 +17,10 @@ defmodule BonsaiServing.Latency do
   """
   alias BonsaiServing.{Config, Unit, Witness}
 
-  @done ~r/req#(?<req>\d+) done \| (?<kind>[^|]+)\| (?<finish>[^|]+)\| prompt (?<prompt>[\d,]+) \| output (?<output>[\d,]+) \| cache (?<cache>[\d,]+) \((?<cache_pct>[\d.]+)%(?<cache_note>[^)]*)\) \| TTFT (?<ttft>[\d.]+)\s*(?<ttft_unit>ms|s) \| total (?<total>[\d.]+)\s*(?<total_unit>ms|s) \| queue (?<queue>[\d.]+)\s*(?<queue_unit>ms|s) \| prefill (?<prefill>[\d.]+)(?<prefill_scale>[kM]?) \s*(?<prefill_unit>[\w\/]+) \| decode (?<decode>[\d.]+)(?<decode_scale>[kM]?) \s*(?<decode_unit>[\w\/]+)(?: \| dflash2 accepted (?<spec_accepted>\d+)\/(?<spec_drafted>\d+) \((?<spec_pct>[\d.]+)%\))?/
+  # Every field but the request line itself is optional in practice: a request that never queued
+  # has no `queue` field, and a request without speculative decoding has no tail. A parser that
+  # demands them silently drops exactly the runs worth measuring.
+  @done ~r/req#(?<req>\d+) done \| (?<kind>[^|]+)\| (?<finish>[^|]+)\| prompt (?<prompt>[\d,]+) \| output (?<output>[\d,]+) \| cache (?<cache>[\d,]+) \((?<cache_pct>[\d.]+)%(?<cache_note>[^)]*)\) \| TTFT (?<ttft>[\d.]+)\s*(?<ttft_unit>ms|s) \| total (?<total>[\d.]+)\s*(?<total_unit>ms|s)(?: \| queue (?<queue>[\d.]+)\s*(?<queue_unit>ms|s))? \| prefill (?<prefill>[\d.]+)(?<prefill_scale>[kM]?) \s*(?<prefill_unit>[\w\/]+) \| decode (?<decode>[\d.]+)(?<decode_scale>[kM]?) \s*(?<decode_unit>[\w\/]+)(?: \| (?<spec_kind>[\w ]+?) accepted (?<spec_accepted>\d+)\/(?<spec_drafted>\d+) \((?<spec_pct>[\d.]+)%\))?/
 
   @doc "Pure: one `req#N done` line to a map, or `{:error, {:unparsed_done_line, line}}`."
   def parse_done(line) do
@@ -99,7 +102,9 @@ defmodule BonsaiServing.Latency do
     unit = Keyword.get(opts, :unit)
     port = Keyword.get(opts, :port, Config.port())
 
-    before = last_req(unit)
+    # Stamped before the work is sent, and the journal is read from there: the engine's request
+    # counter restarts at 1 with the process, so a number cannot mark where a run began.
+    stamp = Unit.since_stamp()
 
     results =
       Enum.map(1..repeats, fn _ ->
@@ -109,10 +114,9 @@ defmodule BonsaiServing.Latency do
     case Enum.find(results, &match?({:error, _}, &1)) do
       nil ->
         # The log is written before the response is released, so the lines are there.
-        case Unit.journal(unit) do
+        case Unit.journal(unit, stamp) do
           {:ok, lines} ->
-            fresh = lines |> parse_dones() |> Enum.filter(&(&1.req > before))
-            {:ok, %{requests: fresh, prompt_words: words, repeats: repeats}}
+            {:ok, %{requests: parse_dones(lines), prompt_words: words, repeats: repeats}}
 
           {:error, reason} ->
             {:error, reason}
@@ -144,6 +148,63 @@ defmodule BonsaiServing.Latency do
           )
         ]
       end)
+
+    widths =
+      Enum.reduce([header | rows], List.duplicate(0, length(header)), fn row, acc ->
+        row |> Enum.zip(acc) |> Enum.map(fn {cell, width} -> max(String.length(cell), width) end)
+      end)
+
+    pad = fn row ->
+      row
+      |> Enum.zip(widths)
+      |> Enum.map_join("  ", fn {cell, width} -> String.pad_trailing(cell, width) end)
+      |> String.trim_trailing()
+    end
+
+    [pad.(header), String.duplicate("-", Enum.sum(widths) + 2 * (length(widths) - 1)) | Enum.map(rows, pad)]
+  end
+
+  @doc """
+  min, median and max of one metric over the rows, with the spread as a percentage of the median.
+
+  A single request is not a latency: what a caller feels is the spread. Reporting the median alone
+  hides a 10 s first request behind a 0.1 s second one.
+  """
+  def spread(requests, key) do
+    values = requests |> Enum.map(&Map.fetch!(&1, key)) |> Enum.sort()
+    n = length(values)
+
+    %{
+      n: n,
+      min: hd(values),
+      median: if(rem(n, 2) == 1, do: Enum.at(values, div(n, 2)), else: (Enum.at(values, div(n, 2) - 1) + Enum.at(values, div(n, 2))) / 2),
+      max: List.last(values)
+    }
+  end
+
+  @doc "The spread of TTFT, prefill and decode, one line each."
+  def spread_table(requests) do
+    metrics = [
+      {:ttft_ms, "TTFT", &ms_label/1},
+      {:prefill_tps, "prefill", fn v -> "#{round(v)} tok/s" end},
+      {:decode_tps, "decode", fn v -> "#{round(v * 10) / 10} tok/s" end}
+    ]
+
+    rows =
+      Enum.map(metrics, fn {key, label, format} ->
+        s = spread(requests, key)
+
+        [
+          label,
+          to_string(s.n),
+          format.(s.min),
+          format.(s.median),
+          format.(s.max),
+          if(s.median > 0, do: "#{round((s.max - s.min) / s.median * 100)}%", else: "-")
+        ]
+      end)
+
+    header = ["metric", "n", "min", "median", "max", "spread"]
 
     widths =
       Enum.reduce([header | rows], List.duplicate(0, length(header)), fn row, acc ->

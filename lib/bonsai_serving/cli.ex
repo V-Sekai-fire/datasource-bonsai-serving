@@ -18,7 +18,8 @@ defmodule BonsaiServing.CLI do
     port: :integer,
     max_tokens: :integer,
     words: :integer,
-    repeats: :integer
+    repeats: :integer,
+    stats: :boolean
   ]
 
   def main(argv) do
@@ -60,6 +61,7 @@ defmodule BonsaiServing.CLI do
       latency [--words N]        send --repeats requests of the same prompt and print the
               [--repeats M]      engine's own TTFT, prefill, decode and cache rows
               [--max-tokens K]
+              [--stats]          also print min, median, max and the spread per metric
       sweep [--words N]          the served configuration and one-flag variants as scratch arms,
             [--repeats M]        each measured by the engine; the unit comes back at the end
             [--max-tokens K]
@@ -159,6 +161,12 @@ defmodule BonsaiServing.CLI do
 
       {:ok, %{requests: requests}} ->
         Enum.each(Latency.table(requests), &IO.puts/1)
+
+        if Map.get(opts, :stats, false) do
+          IO.puts("")
+          Enum.each(Latency.spread_table(requests), &IO.puts/1)
+        end
+
         0
 
       {:error, reason} ->

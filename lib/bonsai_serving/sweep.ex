@@ -27,12 +27,27 @@ defmodule BonsaiServing.Sweep do
       {:fast_prefill, &(&1 ++ ["--fast-prefill-kernel"])},
       {:prefill_cublas, &(&1 ++ ["--prefill-cublas"])},
       {:prefill_chunk4096, &Config.replace(&1, "--prefill-chunk", "4096")},
-      {:graph_off, &(&1 ++ ["--no-cuda-graph"])}
+      {:graph_off, &(&1 ++ ["--no-cuda-graph"])},
+      # Speculative decoding pays only when the drafts land: acceptance was 86.7% on one prompt and
+      # 21.1% on another, and the decode rate moved with it. Without --spec the rate is lower but
+      # does not depend on the content.
+      {:no_spec, &remove_spec(&1)},
+      {:draft2, &Config.replace(&1, "--draft-tokens", "2")}
     ]
   end
 
   @doc "Replace a flag's value, or append the flag when it is absent."
   defdelegate replace(args, flag, value), to: Config
+
+  @doc "Drop the speculative flags with their values, which is how the engine runs without a draft."
+  def remove_spec(args), do: args |> drop_flag("--spec") |> drop_flag("--draft-tokens")
+
+  defp drop_flag(args, flag) do
+    case Enum.find_index(args, &(&1 == flag)) do
+      nil -> args
+      index -> args |> List.delete_at(index) |> List.delete_at(index)
+    end
+  end
 
   @doc """
   Measure the served configuration and then every variant.

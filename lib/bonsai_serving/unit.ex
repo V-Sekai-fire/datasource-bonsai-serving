@@ -21,8 +21,14 @@ defmodule BonsaiServing.Unit do
   def wait_for_line(needle, timeout_ms \\ 300_000),
     do: GenServer.call(__MODULE__, {:wait_for_line, needle, timeout_ms}, timeout_ms + 30_000)
 
-  @doc "A unit's log as a list of lines (the served unit by default)."
-  def journal(unit \\ nil), do: GenServer.call(__MODULE__, {:journal, unit}, 30_000)
+  @doc """
+  A unit's log as a list of lines (the served unit by default).
+
+  `since` is a journalctl stamp, as `since_stamp/0` returns; without it the whole journal is read.
+  Take a stamp before sending work and pass it here: the request counter restarts at 1 with the
+  process, so a request number cannot identify a run.
+  """
+  def journal(unit \\ nil, since \\ nil), do: GenServer.call(__MODULE__, {:journal, unit, since}, 30_000)
 
   # ---------------------------------------------------------------- server
   @impl true
@@ -60,9 +66,11 @@ defmodule BonsaiServing.Unit do
     {:reply, await(Config.unit(), needle, since_stamp(), timeout_ms), state}
   end
 
-  def handle_call({:journal, unit}, _from, state) do
+  def handle_call({:journal, unit, since}, _from, state) do
+    since_args = if since, do: ["--since", since], else: []
+
     reply =
-      case Shell.run(["journalctl", "-u", unit || Config.unit(), "-o", "cat", "--no-pager"]) do
+      case Shell.run(["journalctl", "-u", unit || Config.unit(), "-o", "cat", "--no-pager" | since_args]) do
         {:ok, out} -> {:ok, String.split(out, "\n", trim: true)}
         {:error, reason} -> {:error, reason}
       end
