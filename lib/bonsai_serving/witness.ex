@@ -94,23 +94,56 @@ defmodule BonsaiServing.Witness do
   @doc "One temperature-0 completion: the text, its length and its sha256."
   def ask(prompt \\ nil, opts \\ []) do
     prompt = prompt || Config.witness_prompt()
+
+    with {:ok, %{text: text}} <- chat([%{role: "user", content: prompt}], opts) do
+      {:ok, %{text: text, chars: String.length(text), sha256: sha256(text)}}
+    end
+  end
+
+  @doc """
+  One temperature-0 chat over a whole message list. Returns the reply text, the completion token
+  count the server reported, and the client wall time in milliseconds.
+
+  Options: `:port`, `:max_tokens` (default 200), `:key` and `:model` (looked up once per call when
+  absent; a caller sending many requests passes both so each request is one round trip).
+  """
+  def chat(messages, opts \\ []) do
     port = Keyword.get(opts, :port, Config.port())
     max_tokens = Keyword.get(opts, :max_tokens, 200)
 
     with {:ok, key} <- maybe_key(Keyword.get(opts, :key)),
-         {:ok, model} <- model_id(port, key),
-         {:ok, body} <- post("http://127.0.0.1:#{port}/v1/chat/completions", key, %{
-           model: model,
-           messages: [%{role: "user", content: prompt}],
-           temperature: 0,
-           max_tokens: max_tokens,
-           stream: false
-         }),
-         {:ok, json} <- decode(body),
-         {:ok, text} <- first_content(json) do
-      {:ok, %{text: text, chars: String.length(text), sha256: sha256(text)}}
+         {:ok, model} <- maybe_model(Keyword.get(opts, :model), port, key) do
+      started = System.monotonic_time(:microsecond)
+
+      with {:ok, body} <- post("http://127.0.0.1:#{port}/v1/chat/completions", key, %{
+             model: model,
+             messages: messages,
+             temperature: 0,
+             max_tokens: max_tokens,
+             stream: false
+           }),
+           {:ok, json} <- decode(body),
+           {:ok, text} <- first_content(json) do
+        wall_ms = (System.monotonic_time(:microsecond) - started) / 1000
+
+        {:ok, %{text: text, completion_tokens: completion_tokens(json), wall_ms: wall_ms}}
+      end
     end
   end
+
+  @doc "The key and model id once, for a caller that sends many requests."
+  def session(port \\ Config.port()) do
+    with {:ok, key} <- api_key(),
+         {:ok, model} <- model_id(port, key) do
+      {:ok, [key: key, model: model, port: port]}
+    end
+  end
+
+  defp maybe_model(nil, port, key), do: model_id(port, key)
+  defp maybe_model(model, _port, _key), do: {:ok, model}
+
+  defp completion_tokens(%{"usage" => %{"completion_tokens" => n}}) when is_integer(n), do: n
+  defp completion_tokens(_), do: 0
 
   defp first_content(%{"choices" => [%{"message" => %{"content" => content}} | _]})
        when is_binary(content),
@@ -152,7 +185,12 @@ defmodule BonsaiServing.Witness do
     :inets.start()
     :ssl.start()
 
-    headers = auth_headers(key) ++ [{~c"content-type", ~c"application/json"}]
+    # `connection: close` gives every request its own socket. Without it :httpc queues a request
+    # behind another on a kept-alive session to the same host, so k "parallel" callers arrive one at
+    # a time and a concurrency or blocking measurement reads the client, not the server.
+    headers =
+      auth_headers(key) ++
+        [{~c"content-type", ~c"application/json"}, {~c"connection", ~c"close"}]
     request = {String.to_charlist(url), headers, ~c"application/json", :json.encode(payload)}
 
     case :httpc.request(:post, request, [timeout: 900_000], []) do

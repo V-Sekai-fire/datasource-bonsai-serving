@@ -9,7 +9,7 @@ defmodule BonsaiServing.CLI do
       mix bonsai capacity [--kv-dtype rk8v4] [--max-context 1048576]
       mix bonsai start | stop
   """
-  alias BonsaiServing.{Capacity, Config, Devices, Latency, Sweep, Unit, Witness}
+  alias BonsaiServing.{Capacity, Config, Devices, Latency, Load, Sweep, Unit, Witness}
 
   @switches [
     expected: :string,
@@ -20,7 +20,13 @@ defmodule BonsaiServing.CLI do
     words: :integer,
     repeats: :integer,
     stats: :boolean,
-    only: :string
+    only: :string,
+    big: :integer,
+    agent: :integer,
+    rounds: :integer,
+    others: :integer,
+    long: :integer,
+    streams: :string
   ]
 
   def main(argv) do
@@ -46,6 +52,9 @@ defmodule BonsaiServing.CLI do
   defp dispatch(["capacity"], opts), do: capacity(opts)
   defp dispatch(["latency"], opts), do: latency(opts)
   defp dispatch(["sweep"], opts), do: sweep(opts)
+  defp dispatch(["retention"], opts), do: retention(opts)
+  defp dispatch(["blocking"], opts), do: blocking(opts)
+  defp dispatch(["throughput"], opts), do: throughput(opts)
   defp dispatch(["start"], _), do: start_unit()
   defp dispatch(["stop"], _), do: stop_unit()
   defp dispatch(["restart"], _), do: restart_unit()
@@ -68,6 +77,14 @@ defmodule BonsaiServing.CLI do
             [--repeats M]        each measured by the engine; the unit comes back at the end
             [--max-tokens K]
             [--only a,b]         sweep only these variants (names from Sweep.variants/0)
+      retention [--big N]        a resident long session, a growing agent conversation and other
+                [--agent N]      callers between its turns; per request the engine's TTFT and
+                [--rounds R]     cache share (did the agent stay warm?)
+                [--others O]
+      blocking [--long N]        a short request sent while another caller's cold prompt
+               [--repeats M]     prefills: how long does the short one wait?
+      throughput [--streams 1,2,3]  k requests at once: total and per-stream tok/s
+                 [--repeats M] [--max-tokens K]
       start | stop               the unit
       restart                    the unit, for a changed argument list
     """)
@@ -177,6 +194,74 @@ defmodule BonsaiServing.CLI do
         fail(reason)
     end
   end
+
+  defp retention(opts) do
+    run_opts =
+      [big: 180_000, agent: 32_000, rounds: 4, others: 3]
+      |> Enum.map(fn {k, default} -> {k, Map.get(opts, k, default)} end)
+
+    case Load.retention(run_opts) do
+      {:ok, rows} ->
+        Enum.each(rows, fn {label, r} ->
+          note = if r.cache_note == "", do: "", else: ", " <> r.cache_note
+
+          IO.puts(
+            String.pad_trailing(label, 30) <>
+              String.pad_leading(ms(r.ttft_ms), 10) <>
+              "  prompt #{r.prompt_tokens}  cache #{r.cache_pct}%#{note}"
+          )
+        end)
+
+        0
+
+      {:error, reason} ->
+        fail(reason)
+    end
+  end
+
+  defp blocking(opts) do
+    run_opts = [long: Map.get(opts, :long, 40_000), repeats: Map.get(opts, :repeats, 2)]
+
+    case Load.blocking(run_opts) do
+      {:ok, rows} ->
+        Enum.each(rows, fn r ->
+          IO.puts("long cold prompt #{ms(r.long_ms)}, short request sent once it started: #{ms(r.short_ms)}")
+        end)
+
+        0
+
+      {:error, reason} ->
+        fail(reason)
+    end
+  end
+
+  defp throughput(opts) do
+    streams =
+      opts
+      |> Map.get(:streams, "1,2,3")
+      |> String.split(",", trim: true)
+      |> Enum.map(&String.to_integer(String.trim(&1)))
+
+    run_opts = [streams: streams, repeats: Map.get(opts, :repeats, 3), max_tokens: Map.get(opts, :max_tokens, 600)]
+
+    case Load.throughput(run_opts) do
+      {:ok, rows} ->
+        Enum.each(rows, fn r ->
+          IO.puts(
+            "streams #{r.streams}  total #{Float.round(r.total_tps, 1)} tok/s  " <>
+              "per stream #{Float.round(r.per_stream_tps, 1)} tok/s"
+          )
+        end)
+
+        0
+
+      {:error, reason} ->
+        fail(reason)
+    end
+  end
+
+  defp ms(v) when v >= 1000, do: "#{Float.round(v / 1000, 2)} s"
+  defp ms(v), do: "#{round(v)} ms"
 
   defp sweep(opts) do
     only =
