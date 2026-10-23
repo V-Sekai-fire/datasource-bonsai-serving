@@ -26,6 +26,7 @@ defmodule BonsaiServing.Sweep do
       {:kv_rk4v4_e8, &replace(&1, "--kv-dtype", "rk4v4-e8")},
       {:fast_prefill, &(&1 ++ ["--fast-prefill-kernel"])},
       {:prefill_cublas, &(&1 ++ ["--prefill-cublas"])},
+      {:prefill_chunk4096, &Config.replace(&1, "--prefill-chunk", "4096")},
       {:graph_off, &(&1 ++ ["--no-cuda-graph"])}
     ]
   end
