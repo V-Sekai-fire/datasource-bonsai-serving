@@ -1,7 +1,7 @@
 defmodule BonsaiServingTest do
   use ExUnit.Case, async: true
 
-  alias BonsaiServing.{Capacity, Devices, Log, Witness}
+  alias BonsaiServing.{Capacity, Config, Devices, Log, Sweep, Witness}
 
   describe "log following" do
     test "finds the needle in a complete line and keeps the partial one" do
@@ -121,6 +121,116 @@ defmodule BonsaiServingTest do
 
     test "a missing file read through sudo reports the exit, not an exception" do
       assert {:error, {:exit, _code, _output}} = BonsaiServing.Shell.sudo(["cat", "/nonexistent/pins"])
+    end
+  end
+
+  describe "latency lines" do
+    @short_line "2026-10-23 04:21:54.672  INFO  req#14 done | openai-chat | stop token | prompt 27 | output 181 | cache 27 (100.0%, shared prefix) | TTFT 78.7 ms | total 1.4s | queue 45.9 ms | prefill 0.0 tok/s | decode 140.3 tok/s | dflash2 accepted 109/355 (30.7%)"
+    @long_line "2026-10-23 04:07:40.010  INFO  req#3 done | openai-chat | stop token | prompt 21,520 | output 20 | cache 0 (0.0%) | TTFT 10.1s | total 10.2s | queue 39.3 ms | prefill 2.16k tok/s | decode 192.6 tok/s | dflash2 accepted 15/20 (75.0%)"
+
+    test "parses a cached short request" do
+      assert {:ok, r} = BonsaiServing.Latency.parse_done(@short_line)
+      assert r.req == 14
+      assert r.prompt_tokens == 27
+      assert r.cache_pct == 100.0
+      assert r.cache_note == "shared prefix"
+      assert r.ttft_ms == 78.7
+      assert r.total_ms == 1400.0
+      assert r.decode_tps == 140.3
+      assert r.spec_accepted == 109 and r.spec_drafted == 355
+    end
+
+    test "parses an uncached long request and its thousands separators" do
+      assert {:ok, r} = BonsaiServing.Latency.parse_done(@long_line)
+      assert r.prompt_tokens == 21_520
+      assert r.cache_pct == 0.0
+      assert r.ttft_ms == 10_100.0
+      # the log writes "2.16k tok/s"
+      assert r.prefill_tps == 2160.0
+      assert r.spec_pct == 75.0
+    end
+
+    # Negative control: the engine also logs a `started` line for the same request number, and it
+    # must not be read as a finished one.
+    test "a started line is not a done line" do
+      started =
+        "2026-10-23 04:21:53.337  INFO  req#14 started | openai-chat non-stream | 1 message | max output 200 | thinking off"
+
+      assert {:error, {:unparsed_done_line, ^started}} = BonsaiServing.Latency.parse_done(started)
+      assert BonsaiServing.Latency.parse_dones([started, @short_line]) |> length() == 1
+    end
+
+    # A request with no speculative decoding has no dflash2 field at all; the group comes back as
+    # an empty string and must read as zero, not crash the parse.
+    test "a line without a speculative section parses with zeros" do
+      line =
+        "2026-10-23 04:00:00.000  INFO  req#9 done | openai-chat | length | prompt 512 | output 64 | cache 0 (0.0%) | TTFT 250.0 ms | total 900.0 ms | queue 1.0 ms | prefill 2.00k tok/s | decode 80.0 tok/s"
+
+      assert {:ok, r} = BonsaiServing.Latency.parse_done(line)
+      assert r.spec_accepted == 0 and r.spec_drafted == 0 and r.spec_pct == 0.0
+      assert r.prefill_tps == 2000.0
+      assert r.finish == "length"
+    end
+
+    test "a prompt of N words is long enough to prefill" do
+      assert String.length(BonsaiServing.Latency.prompt(4)) >= 24
+      assert String.length(BonsaiServing.Latency.prompt(256)) >= 1536
+    end
+  end
+
+  describe "the sweep" do
+    defp req(ttft_ms, decode_tps, cache_pct) do
+      %{
+        req: 1,
+        prompt_tokens: 4096,
+        output_tokens: 64,
+        cache_tokens: 0,
+        cache_pct: cache_pct,
+        cache_note: "",
+        ttft_ms: ttft_ms,
+        total_ms: ttft_ms + 500,
+        queue_ms: 1.0,
+        prefill_tps: 2000.0,
+        decode_tps: decode_tps,
+        spec_accepted: 0,
+        spec_drafted: 0,
+        spec_pct: 0.0,
+        finish: "stop token"
+      }
+    end
+
+    test "replace/3 swaps a value or appends the flag" do
+      args = ["--kv-dtype", "rk8v4", "--vision"]
+      assert Sweep.replace(args, "--kv-dtype", "rk4v4-e8") == ["--kv-dtype", "rk4v4-e8", "--vision"]
+      assert Sweep.replace(args, "--draft-tokens", "3") == ["--kv-dtype", "rk8v4", "--vision", "--draft-tokens", "3"]
+    end
+
+    test "every variant leaves one value per flag and never names the artifact" do
+      base = Config.unit_args()
+
+      for {name, transform} <- Sweep.variants() do
+        args = transform.(base)
+        # The arm passes the artifact to the binary itself, so a variant must not add one.
+        refute Config.models() in args, "#{name} added the artifact"
+        assert Enum.count(args, &(&1 == "--devices")) == 1, "#{name} duplicated --devices"
+        assert Enum.count(args, &(&1 == "--kv-dtype")) == 1, "#{name} duplicated --kv-dtype"
+        assert Enum.count(args, &(&1 == "--draft-tokens")) == 1, "#{name} duplicated --draft-tokens"
+      end
+    end
+
+    test "the summary reports the cold and warm rows and a failed variant" do
+      rows = [
+        {:served, {:ok, %{requests: [req(10_000.0, 90.0, 0.0), req(100.0, 200.0, 82.9)]}}},
+        {:draft3, {:error, :boom}}
+      ]
+
+      lines = Sweep.summary(rows)
+      assert Enum.at(lines, 0) =~ "variant"
+      assert Enum.at(lines, 2) =~ "served"
+      assert Enum.at(lines, 2) =~ "10.0 s"
+      assert Enum.at(lines, 2) =~ "100 ms"
+      assert Enum.at(lines, 3) =~ "draft3"
+      assert Enum.at(lines, 3) =~ "failed"
     end
   end
 

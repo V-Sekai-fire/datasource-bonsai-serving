@@ -21,8 +21,8 @@ defmodule BonsaiServing.Unit do
   def wait_for_line(needle, timeout_ms \\ 300_000),
     do: GenServer.call(__MODULE__, {:wait_for_line, needle, timeout_ms}, timeout_ms + 30_000)
 
-  @doc "The unit's log as a list of lines."
-  def journal, do: GenServer.call(__MODULE__, :journal, 30_000)
+  @doc "A unit's log as a list of lines (the served unit by default)."
+  def journal(unit \\ nil), do: GenServer.call(__MODULE__, {:journal, unit}, 30_000)
 
   # ---------------------------------------------------------------- server
   @impl true
@@ -60,9 +60,9 @@ defmodule BonsaiServing.Unit do
     {:reply, await(Config.unit(), needle, since_stamp(), timeout_ms), state}
   end
 
-  def handle_call(:journal, _from, state) do
+  def handle_call({:journal, unit}, _from, state) do
     reply =
-      case Shell.run(["journalctl", "-u", Config.unit(), "-o", "cat", "--no-pager"]) do
+      case Shell.run(["journalctl", "-u", unit || Config.unit(), "-o", "cat", "--no-pager"]) do
         {:ok, out} -> {:ok, String.split(out, "\n", trim: true)}
         {:error, reason} -> {:error, reason}
       end

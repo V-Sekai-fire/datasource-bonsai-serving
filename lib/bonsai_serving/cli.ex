@@ -9,9 +9,17 @@ defmodule BonsaiServing.CLI do
       mix bonsai capacity [--kv-dtype rk8v4] [--max-context 1048576]
       mix bonsai start | stop
   """
-  alias BonsaiServing.{Capacity, Config, Devices, Unit, Witness}
+  alias BonsaiServing.{Capacity, Config, Devices, Latency, Sweep, Unit, Witness}
 
-  @switches [expected: :string, kv_dtype: :string, max_context: :integer, port: :integer, max_tokens: :integer]
+  @switches [
+    expected: :string,
+    kv_dtype: :string,
+    max_context: :integer,
+    port: :integer,
+    max_tokens: :integer,
+    words: :integer,
+    repeats: :integer
+  ]
 
   def main(argv) do
     {opts, rest, invalid} = OptionParser.parse(argv, strict: @switches)
@@ -34,6 +42,8 @@ defmodule BonsaiServing.CLI do
   defp dispatch(["devices"], _), do: devices()
   defp dispatch(["witness"], opts), do: witness(opts)
   defp dispatch(["capacity"], opts), do: capacity(opts)
+  defp dispatch(["latency"], opts), do: latency(opts)
+  defp dispatch(["sweep"], opts), do: sweep(opts)
   defp dispatch(["start"], _), do: start_unit()
   defp dispatch(["stop"], _), do: stop_unit()
   defp dispatch(_, _), do: usage()
@@ -47,6 +57,12 @@ defmodule BonsaiServing.CLI do
       witness [--expected SHA]   one temperature-0 answer, hashed and compared
       capacity [--kv-dtype X]    stop the unit, probe the KV ceiling, start the unit again
                [--max-context N]
+      latency [--words N]        send --repeats requests of the same prompt and print the
+              [--repeats M]      engine's own TTFT, prefill, decode and cache rows
+              [--max-tokens K]
+      sweep [--words N]          the served configuration and one-flag variants as scratch arms,
+            [--repeats M]        each measured by the engine; the unit comes back at the end
+            [--max-tokens K]
       start | stop               the unit
     """)
 
@@ -124,6 +140,50 @@ defmodule BonsaiServing.CLI do
         IO.puts(capacity.line)
         IO.puts("tokens=#{capacity.tokens} pages=#{capacity.pages_used}/#{capacity.pages_total} free=#{capacity.free} #{capacity.free_unit}")
         0
+
+      {:error, reason} ->
+        fail(reason)
+    end
+  end
+
+  defp latency(opts) do
+    measure_opts = [
+      words: Map.get(opts, :words, 16),
+      repeats: Map.get(opts, :repeats, 2),
+      max_tokens: Map.get(opts, :max_tokens, 32)
+    ]
+
+    case Latency.measure(measure_opts) do
+      {:ok, %{requests: []}} ->
+        fail(:no_requests_logged)
+
+      {:ok, %{requests: requests}} ->
+        Enum.each(Latency.table(requests), &IO.puts/1)
+        0
+
+      {:error, reason} ->
+        fail(reason)
+    end
+  end
+
+  defp sweep(opts) do
+    run_opts = [
+      words: Map.get(opts, :words, 4_000),
+      repeats: Map.get(opts, :repeats, 2),
+      max_tokens: Map.get(opts, :max_tokens, 64)
+    ]
+
+    case Sweep.run(run_opts) do
+      {:ok, %{rows: rows, restore: restore}} ->
+        Enum.each(Sweep.summary(rows), &IO.puts/1)
+
+        case restore do
+          :ok ->
+            0
+
+          {:error, reason} ->
+            fail(reason)
+        end
 
       {:error, reason} ->
         fail(reason)
