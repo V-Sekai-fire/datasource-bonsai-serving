@@ -19,7 +19,8 @@ defmodule BonsaiServing.CLI do
     max_tokens: :integer,
     words: :integer,
     repeats: :integer,
-    stats: :boolean
+    stats: :boolean,
+    only: :string
   ]
 
   def main(argv) do
@@ -47,6 +48,7 @@ defmodule BonsaiServing.CLI do
   defp dispatch(["sweep"], opts), do: sweep(opts)
   defp dispatch(["start"], _), do: start_unit()
   defp dispatch(["stop"], _), do: stop_unit()
+  defp dispatch(["restart"], _), do: restart_unit()
   defp dispatch(_, _), do: usage()
 
   defp usage do
@@ -65,7 +67,9 @@ defmodule BonsaiServing.CLI do
       sweep [--words N]          the served configuration and one-flag variants as scratch arms,
             [--repeats M]        each measured by the engine; the unit comes back at the end
             [--max-tokens K]
+            [--only a,b]         sweep only these variants (names from Sweep.variants/0)
       start | stop               the unit
+      restart                    the unit, for a changed argument list
     """)
 
     1
@@ -175,10 +179,18 @@ defmodule BonsaiServing.CLI do
   end
 
   defp sweep(opts) do
+    only =
+      case Map.get(opts, :only) do
+        nil -> nil
+        "" -> nil
+        list -> list |> String.split(",") |> Enum.map(&String.to_atom(String.trim(&1)))
+      end
+
     run_opts = [
       words: Map.get(opts, :words, 4_000),
       repeats: Map.get(opts, :repeats, 2),
-      max_tokens: Map.get(opts, :max_tokens, 64)
+      max_tokens: Map.get(opts, :max_tokens, 64),
+      only: only
     ]
 
     case Sweep.run(run_opts) do
@@ -195,6 +207,13 @@ defmodule BonsaiServing.CLI do
 
       {:error, reason} ->
         fail(reason)
+    end
+  end
+
+  defp restart_unit do
+    case Unit.restart_ready() do
+      {:ok, line} -> IO.puts(line) && 0
+      {:error, reason} -> fail(reason)
     end
   end
 

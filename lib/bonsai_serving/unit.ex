@@ -17,6 +17,13 @@ defmodule BonsaiServing.Unit do
   @doc "Start and wait for `listening on`. {:error, reason} if it never says it."
   def start_ready(timeout_ms \\ 180_000), do: GenServer.call(__MODULE__, {:start_ready, timeout_ms}, timeout_ms + 30_000)
 
+  @doc """
+  Stop the unit and start it again, waiting for the listening line: how a changed argument list takes
+  effect. `systemctl start` alone leaves a running unit alone, so its flags never change.
+  """
+  def restart_ready(timeout_ms \\ 300_000),
+    do: GenServer.call(__MODULE__, {:restart_ready, timeout_ms}, timeout_ms + 30_000)
+
   @doc "Block until the unit logs a line containing `needle`."
   def wait_for_line(needle, timeout_ms \\ 300_000),
     do: GenServer.call(__MODULE__, {:wait_for_line, needle, timeout_ms}, timeout_ms + 30_000)
@@ -57,6 +64,22 @@ defmodule BonsaiServing.Unit do
 
   def handle_call({:start_ready, timeout_ms}, _from, state) do
     # Stamp the window before the start, so a previous instance's line cannot answer for this one.
+    # An already-active unit is not restarted by `systemctl start`, so its "listening on" line never
+    # arrives and the caller waits out the whole timeout. Say what is true instead: the engine is up.
+    # Use restart_ready/1 to apply a changed argument list.
+    case Shell.run(["systemctl", "is-active", Config.unit()]) do
+      {:ok, "active"} ->
+        {:reply, {:ok, :already_running}, state}
+
+      _ ->
+        since = since_stamp()
+        _ = Shell.quietly(["sudo", "systemctl", "start", Config.unit()])
+        {:reply, await(Config.unit(), "listening on", since, timeout_ms), state}
+    end
+  end
+
+  def handle_call({:restart_ready, timeout_ms}, _from, state) do
+    _ = Shell.quietly(["sudo", "systemctl", "stop", Config.unit()])
     since = since_stamp()
     _ = Shell.quietly(["sudo", "systemctl", "start", Config.unit()])
     {:reply, await(Config.unit(), "listening on", since, timeout_ms), state}
