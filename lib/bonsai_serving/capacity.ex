@@ -56,23 +56,18 @@ defmodule BonsaiServing.Capacity do
     end
   end
 
+  @doc "The probe's argument list: the served list with the three flags the probe overrides."
+  def probe_args(kv_dtype, max_context, port) do
+    Config.unit_args()
+    |> Config.replace("--max-context", to_string(max_context))
+    |> Config.replace("--kv-capacity", "auto")
+    |> Config.replace("--kv-dtype", kv_dtype)
+    |> Kernel.++(["--rope-yarn", "--port", to_string(port)])
+  end
+
   defp run_probe(pins, kv_dtype, max_context, port) do
     cvd = "#{pins.primary},#{pins.secondary}"
-
-    args =
-      ["--devices", "0,1"] ++
-        Config.common_args() ++
-        [
-          "--max-context",
-          to_string(max_context),
-          "--kv-capacity",
-          "auto",
-          "--kv-dtype",
-          kv_dtype,
-          "--rope-yarn",
-          "--port",
-          to_string(port)
-        ]
+    args = probe_args(kv_dtype, max_context, port)
 
     with {:ok, unit} <- Arm.start("capacity", cvd, args) do
       result =

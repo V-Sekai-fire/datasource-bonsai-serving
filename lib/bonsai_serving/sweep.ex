@@ -31,12 +31,7 @@ defmodule BonsaiServing.Sweep do
   end
 
   @doc "Replace a flag's value, or append the flag when it is absent."
-  def replace(args, flag, value) do
-    case Enum.find_index(args, &(&1 == flag)) do
-      nil -> args ++ [flag, value]
-      index -> List.replace_at(args, index + 1, value)
-    end
-  end
+  defdelegate replace(args, flag, value), to: Config
 
   @doc """
   Measure the served configuration and then every variant.

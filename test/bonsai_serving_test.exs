@@ -178,6 +178,20 @@ defmodule BonsaiServingTest do
     end
   end
 
+  describe "argument lists" do
+    test "the capacity probe overrides its three flags instead of appending them" do
+      args = Capacity.probe_args("rk4v4-e8", 1_048_576, 8098)
+
+      for flag <- ["--devices", "--max-context", "--kv-capacity", "--kv-dtype", "--port"] do
+        assert Enum.count(args, &(&1 == flag)) == 1, "#{flag} appears more than once"
+      end
+
+      assert "auto" == args |> Enum.drop_while(&(&1 != "--kv-capacity")) |> Enum.at(1)
+      assert "rk4v4-e8" == args |> Enum.drop_while(&(&1 != "--kv-dtype")) |> Enum.at(1)
+      assert "1048576" == args |> Enum.drop_while(&(&1 != "--max-context")) |> Enum.at(1)
+    end
+  end
+
   describe "the sweep" do
     defp req(ttft_ms, decode_tps, cache_pct) do
       %{

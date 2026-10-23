@@ -25,7 +25,10 @@ defmodule BonsaiServing.Config do
     "--no-thinking"
   ]
 
-  @unit_args @common_args ++ ["--max-context", "262144", "--kv-capacity", "262144", "--kv-dtype", "rk8v4"]
+  # The whole served argument list, as /etc/systemd/system/ninfer-serve.service runs it. `--devices
+  # 0,1` is part of it: the pins in pipeline.devices decide which cards those ordinals are, and a
+  # variant measured against the unit has to start from the same list.
+  @unit_args ["--devices", "0,1"] ++ @common_args ++ ["--max-context", "262144", "--kv-capacity", "262144", "--kv-dtype", "rk8v4"]
 
   @witness_prompt "Write a 150-word explanation of why the sky is blue."
   @witness_sha "d91927deb7e5d6dfd89919e9af780f667660100bf2a2b73a8690a3d0d457230e"
@@ -44,4 +47,15 @@ defmodule BonsaiServing.Config do
   def witness_sha, do: @witness_sha
 
   def serve_args(port), do: @unit_args ++ ["--port", to_string(port)]
+
+  @doc """
+  Replace a flag's value in an argument list, or append the flag when it is absent. Appending a
+  second copy of a flag the list already carries is how a probe silently measures the wrong thing.
+  """
+  def replace(args, flag, value) do
+    case Enum.find_index(args, &(&1 == flag)) do
+      nil -> args ++ [flag, value]
+      index -> List.replace_at(args, index + 1, value)
+    end
+  end
 end
