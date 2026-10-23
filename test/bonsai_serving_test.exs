@@ -313,6 +313,30 @@ defmodule BonsaiServingTest do
     end
   end
 
+  describe "long requests" do
+    test "a TTFT and total past a minute parse, minutes included" do
+      line =
+        "req#62 done | openai-chat | stop token | prompt 180,046 | output 48 | cache 0 (0.0%) | " <>
+          "TTFT 1m 55.8s | total 1m 56.3s | queue 862 ms | prefill 1.57k tok/s | decode 82.8 tok/s | " <>
+          "dflash2 accepted 30/144 (20.8%)"
+
+      assert {:ok, r} = BonsaiServing.Latency.parse_done(line)
+      assert r.ttft_ms == 115_800.0
+      assert r.total_ms == 116_300.0
+      assert r.queue_ms == 862.0
+    end
+
+    test "a line under a minute is unchanged" do
+      line =
+        "req#3 done | openai-chat | stop token | prompt 27 | output 181 | cache 27 (100.0%, shared prefix) | " <>
+          "TTFT 78.7 ms | total 1.4s | prefill 0.0 tok/s | decode 140.3 tok/s"
+
+      assert {:ok, r} = BonsaiServing.Latency.parse_done(line)
+      assert r.ttft_ms == 78.7
+      assert r.total_ms == 1400.0
+    end
+  end
+
   describe "load shapes" do
     test "a conversation is unique to its tag and roughly the size asked" do
       a = Load.conversation("a", 1_000)

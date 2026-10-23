@@ -20,7 +20,7 @@ defmodule BonsaiServing.Latency do
   # Every field but the request line itself is optional in practice: a request that never queued
   # has no `queue` field, and a request without speculative decoding has no tail. A parser that
   # demands them silently drops exactly the runs worth measuring.
-  @done ~r/req#(?<req>\d+) done \| (?<kind>[^|]+)\| (?<finish>[^|]+)\| prompt (?<prompt>[\d,]+) \| output (?<output>[\d,]+) \| cache (?<cache>[\d,]+) \((?<cache_pct>[\d.]+)%(?<cache_note>[^)]*)\) \| TTFT (?<ttft>[\d.]+)\s*(?<ttft_unit>ms|s) \| total (?<total>[\d.]+)\s*(?<total_unit>ms|s)(?: \| queue (?<queue>[\d.]+)\s*(?<queue_unit>ms|s))? \| prefill (?<prefill>[\d.]+)(?<prefill_scale>[kM]?) \s*(?<prefill_unit>[\w\/]+) \| decode (?<decode>[\d.]+)(?<decode_scale>[kM]?) \s*(?<decode_unit>[\w\/]+)(?: \| (?<spec_kind>[\w ]+?) accepted (?<spec_accepted>\d+)\/(?<spec_drafted>\d+) \((?<spec_pct>[\d.]+)%\))?/
+  @done ~r/req#(?<req>\d+) done \| (?<kind>[^|]+)\| (?<finish>[^|]+)\| prompt (?<prompt>[\d,]+) \| output (?<output>[\d,]+) \| cache (?<cache>[\d,]+) \((?<cache_pct>[\d.]+)%(?<cache_note>[^)]*)\) \| TTFT (?:(?<ttft_min>\d+)m )?(?<ttft>[\d.]+)\s*(?<ttft_unit>ms|s) \| total (?:(?<total_min>\d+)m )?(?<total>[\d.]+)\s*(?<total_unit>ms|s)(?: \| queue (?:(?<queue_min>\d+)m )?(?<queue>[\d.]+)\s*(?<queue_unit>ms|s))? \| prefill (?<prefill>[\d.]+)(?<prefill_scale>[kM]?) \s*(?<prefill_unit>[\w\/]+) \| decode (?<decode>[\d.]+)(?<decode_scale>[kM]?) \s*(?<decode_unit>[\w\/]+)(?: \| (?<spec_kind>[\w ]+?) accepted (?<spec_accepted>\d+)\/(?<spec_drafted>\d+) \((?<spec_pct>[\d.]+)%\))?/
 
   @doc "Pure: one `req#N done` line to a map, or `{:error, {:unparsed_done_line, line}}`."
   def parse_done(line) do
@@ -37,9 +37,9 @@ defmodule BonsaiServing.Latency do
            cache_tokens: int(c["cache"]),
            cache_pct: float(c["cache_pct"]),
            cache_note: c["cache_note"] |> String.trim_leading(",") |> String.trim(),
-           ttft_ms: ms(c["ttft"], c["ttft_unit"]),
-           total_ms: ms(c["total"], c["total_unit"]),
-           queue_ms: ms(c["queue"], c["queue_unit"]),
+           ttft_ms: ms(c["ttft"], c["ttft_unit"]) + minutes(c["ttft_min"]),
+           total_ms: ms(c["total"], c["total_unit"]) + minutes(c["total_min"]),
+           queue_ms: ms(c["queue"], c["queue_unit"]) + minutes(c["queue_min"]),
            prefill_tps: scaled(c["prefill"], c["prefill_scale"]),
            decode_tps: scaled(c["decode"], c["decode_scale"]),
            spec_accepted: int(c["spec_accepted"]),
@@ -239,6 +239,11 @@ defmodule BonsaiServing.Latency do
   defp float(nil), do: 0.0
   defp float(""), do: 0.0
   defp float(text), do: elem(Float.parse(text), 0)
+
+  # A request past a minute reads `TTFT 1m 55.8s`: the minutes are their own group.
+  defp minutes(nil), do: 0.0
+  defp minutes(""), do: 0.0
+  defp minutes(text), do: String.to_integer(text) * 60_000.0
 
   defp ms(nil, _), do: 0.0
   defp ms("", _), do: 0.0
