@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "datasource-bonsai-serving"
+abstract: "OTP app that binds a two-card Bonsai 2 serving stack: unit control, witnesses, KV capacity probes and latency, retention, blocking and throughput measurements read from the engine's own request lines."
+authors:
+  - family-names: "Lee"
+    given-names: "K. S. Ernest"
+    alias: "iFire"
+license: MIT
+repository-code: "https://github.com/V-Sekai-fire/datasource-bonsai-serving"
