@@ -1,7 +1,7 @@
 defmodule BonsaiServingTest do
   use ExUnit.Case, async: true
 
-  alias BonsaiServing.{Capacity, Config, Devices, Log, Sweep, Witness}
+  alias BonsaiServing.{Capacity, Config, Devices, Load, Log, Sweep, Witness}
 
   describe "log following" do
     test "finds the needle in a complete line and keeps the partial one" do
@@ -285,6 +285,55 @@ defmodule BonsaiServingTest do
       assert Enum.at(lines, 2) =~ "100 ms"
       assert Enum.at(lines, 3) =~ "draft3"
       assert Enum.at(lines, 3) =~ "failed"
+    end
+  end
+
+  describe "served argument list" do
+    defp value(args, flag), do: Enum.at(args, Enum.find_index(args, &(&1 == flag)) + 1)
+
+    test "the KV pool fits what the engine accepts" do
+      # The engine refuses --kv-capacity above --max-context x --max-concurrency and the unit then
+      # crash-loops ("kv_capacity is outside the usable range").
+      args = Config.unit_args()
+      cap = String.to_integer(value(args, "--kv-capacity"))
+      ctx = String.to_integer(value(args, "--max-context"))
+      lanes = String.to_integer(value(args, "--max-concurrency"))
+      assert cap <= ctx * lanes
+    end
+
+    test "the check fires on a pool too big for the lanes" do
+      args = Config.replace(Config.unit_args(), "--max-concurrency", "1")
+      cap = String.to_integer(value(args, "--kv-capacity"))
+      refute cap <= String.to_integer(value(args, "--max-context")) * 1
+    end
+
+    test "every flag appears once" do
+      flags = Enum.filter(Config.unit_args(), &String.starts_with?(&1, "--"))
+      assert flags == Enum.uniq(flags)
+    end
+  end
+
+  describe "load shapes" do
+    test "a conversation is unique to its tag and roughly the size asked" do
+      a = Load.conversation("a", 1_000)
+      b = Load.conversation("b", 1_000)
+      refute a == b
+      sentences = a |> hd() |> Map.fetch!(:content) |> String.split(".") |> length()
+      # Ten tokens per sentence, so 1,000 tokens is about 100 sentences.
+      assert sentences >= 100 and sentences <= 110
+    end
+
+    test "extend appends a reply and a new user turn, keeping the prefix" do
+      start = Load.conversation("t", 10)
+      next = Load.extend(start, "ok")
+      assert Enum.take(next, length(start)) == start
+      assert Enum.at(next, length(start)) == %{role: "assistant", content: "ok"}
+      assert length(next) == length(start) + 2
+    end
+
+    test "median of odd and even lists" do
+      assert Load.median([3, 1, 2]) == 2
+      assert Load.median([4, 1, 3, 2]) == 2.5
     end
   end
 

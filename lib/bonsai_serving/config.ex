@@ -17,18 +17,38 @@ defmodule BonsaiServing.Config do
     "bonsai-27b",
     "--vision",
     "--max-concurrency",
-    "1",
+    "3",
     "--spec",
     "dflash2",
     "--draft-tokens",
-    "5",
+    "8",
     "--no-thinking"
   ]
 
-  # The whole served argument list, as /etc/systemd/system/ninfer-serve.service runs it. `--devices
-  # 0,1` is part of it: the pins in pipeline.devices decide which cards those ordinals are, and a
-  # variant measured against the unit has to start from the same list.
-  @unit_args ["--devices", "0,1"] ++ @common_args ++ ["--max-context", "262144", "--kv-capacity", "262144", "--kv-dtype", "rk8v4"]
+  # The context-cache flags of ninfer-serve.service.d/latency.conf. The defaults (`private 2`, one
+  # cached device state) let a resident long session push a growing agent conversation out, so every
+  # agent turn re-prefilled; --concurrent-prefill lets a short request in while another prefills.
+  @cache_args [
+    "--max-private-continuations",
+    "8",
+    "--device-state-slots",
+    "3",
+    "--host-state-slots",
+    "16",
+    "--host-kv-mib",
+    "16384",
+    "--recency-eviction",
+    "--concurrent-prefill"
+  ]
+
+  # The whole served argument list, as ninfer-serve.service with its latency.conf drop-in runs it.
+  # `--devices 0,1` is part of it: the pins in pipeline.devices decide which cards those ordinals
+  # are, and a variant measured against the unit has to start from the same list. The engine refuses
+  # a --kv-capacity above --max-context x --max-concurrency, so the pool grows with concurrency.
+  @unit_args ["--devices", "0,1"] ++
+               @common_args ++
+               ["--max-context", "262144", "--kv-capacity", "524288", "--kv-dtype", "rk8v4"] ++
+               @cache_args
 
   @witness_prompt "Write a 150-word explanation of why the sky is blue."
   @witness_sha "d91927deb7e5d6dfd89919e9af780f667660100bf2a2b73a8690a3d0d457230e"
