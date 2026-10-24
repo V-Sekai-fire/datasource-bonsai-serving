@@ -4,7 +4,7 @@ An OTP application that binds this box's Bonsai 2 serving stack: one NInfer proc
 and the RTX 3090 as a layer pipeline, its systemd unit, and the two questions worth asking about it —
 what text does it produce, and how much context can it hold. It replaces the ad-hoc CLI harnesses.
 
-It sits on the hexagon's **datasource** side. RFD 2028 (`V-Sekai-fire/manuals-weftspun`, the Netflix
+It sits on the hexagon's **datasource** side. RFD66606-2028 (`V-Sekai-fire/manuals-weftspun`, the Netflix
 formulation of the pattern) puts the implementations against the real world in `datasources/` and
 names "a GPU compute host" among them; this repository is that implementation for Bonsai 2. It is
 checked out at `6-datasource/bonsai-serving` by `V-Sekai-fire/contract-manifest-taskweft`.
